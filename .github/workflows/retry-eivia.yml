@@ -1,13 +1,10 @@
 name: Retry Eivia Instance Launch
-
 on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
-
 permissions:
   actions: write
-
 jobs:
   retry-launch:
     runs-on: ubuntu-latest
@@ -28,21 +25,31 @@ jobs:
           region=${{ secrets.OCI_REGION }}
           key_file=/home/runner/.oci/key.pem
           EOF
+          chmod 600 ~/.oci/config
           echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.oci/ssh_key.pub
 
       - name: Check if eivia-server already exists
         id: check
+        env:
+          OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
           COUNT=$(oci compute instance list \
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
             --display-name "eivia-server" \
-            --query "data[?\"lifecycle-state\" != 'TERMINATED'] | length(@)" \
-            --raw-output)
+            --lifecycle-state RUNNING \
+            --query "length(data)" \
+            --raw-output 2>/dev/null)
+          COUNT=${COUNT:-0}
+          echo "Instance count: $COUNT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Attempt launch across ADs
         id: launch
         if: steps.check.outputs.count == '0'
+        env:
+          OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
           ADS=("UVCV:UK-LONDON-1-AD-1" "UVCV:UK-LONDON-1-AD-2" "UVCV:UK-LONDON-1-AD-3")
           SUCCESS=false
@@ -58,7 +65,7 @@ jobs:
               --display-name "eivia-server" \
               --assign-public-ip true \
               --ssh-authorized-keys-file ~/.oci/ssh_key.pub \
-              --boot-volume-size-in-gbs 100; then
+              --boot-volume-size-in-gbs 100 2>/dev/null; then
               echo "SUCCESS on $AD"
               SUCCESS=true
               break
