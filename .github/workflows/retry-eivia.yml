@@ -1,0 +1,79 @@
+name: Retry Eivia Instance Launch
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  retry-launch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install OCI CLI
+        run: pip install oci-cli
+
+      - name: Set up OCI auth
+        run: |
+          mkdir -p ~/.oci
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config << EOF
+          [DEFAULT]
+          user=${{ secrets.OCI_USER_OCID }}
+          fingerprint=${{ secrets.OCI_FINGERPRINT }}
+          tenancy=${{ secrets.OCI_TENANCY_OCID }}
+          region=${{ secrets.OCI_REGION }}
+          key_file=/home/runner/.oci/key.pem
+          EOF
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.oci/ssh_key.pub
+
+      - name: Check if eivia-server already exists
+        id: check
+        run: |
+          COUNT=$(oci compute instance list \
+            --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+            --display-name "eivia-server" \
+            --query "data[?\"lifecycle-state\" != 'TERMINATED'] | length(@)" \
+            --raw-output)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Attempt launch across ADs
+        id: launch
+        if: steps.check.outputs.count == '0'
+        run: |
+          ADS=("UVCV:UK-LONDON-1-AD-1" "UVCV:UK-LONDON-1-AD-2" "UVCV:UK-LONDON-1-AD-3")
+          SUCCESS=false
+          for AD in "${ADS[@]}"; do
+            echo "Trying $AD..."
+            if oci compute instance launch \
+              --availability-domain "$AD" \
+              --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+              --image-id "${{ secrets.OCI_IMAGE_ID }}" \
+              --subnet-id "${{ secrets.OCI_SUBNET_ID }}" \
+              --display-name "eivia-server" \
+              --assign-public-ip true \
+              --ssh-authorized-keys-file ~/.oci/ssh_key.pub \
+              --boot-volume-size-in-gbs 100; then
+              echo "SUCCESS on $AD"
+              SUCCESS=true
+              break
+            else
+              echo "No capacity on $AD"
+            fi
+          done
+          echo "success=$SUCCESS" >> "$GITHUB_OUTPUT"
+
+      - name: Skip (instance already exists)
+        if: steps.check.outputs.count != '0'
+        run: echo "eivia-server already exists — skipping this run."
+
+      - name: Disable this workflow now that it succeeded
+        if: steps.launch.outputs.success == 'true'
+        run: gh workflow disable "retry-eivia.yml"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
