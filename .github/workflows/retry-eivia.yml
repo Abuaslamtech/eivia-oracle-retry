@@ -34,14 +34,20 @@ jobs:
           OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
           SUPPRESS_LABEL_WARNING: "True"
         run: |
-          COUNT=$(oci compute instance list \
+          chmod 600 ~/.oci/config
+          chmod 600 ~/.oci/key.pem
+          RAW=$(oci compute instance list \
             --compartment-id "${{ secrets.OCI_COMPARTMENT_ID }}" \
             --display-name "eivia-server" \
             --lifecycle-state RUNNING \
             --query "length(data)" \
-            --raw-output 2>/dev/null)
+            --raw-output 2>&1)
+          echo "=== RAW OUTPUT START ==="
+          echo "$RAW"
+          echo "=== RAW OUTPUT END ==="
+          COUNT=$(echo "$RAW" | grep -E '^[0-9]+$' | tail -1)
           COUNT=${COUNT:-0}
-          echo "Instance count: $COUNT"
+          echo "Final COUNT=$COUNT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Attempt launch across ADs
@@ -65,7 +71,7 @@ jobs:
               --display-name "eivia-server" \
               --assign-public-ip true \
               --ssh-authorized-keys-file ~/.oci/ssh_key.pub \
-              --boot-volume-size-in-gbs 100 2>/dev/null; then
+              --boot-volume-size-in-gbs 100 2>&1; then
               echo "SUCCESS on $AD"
               SUCCESS=true
               break
